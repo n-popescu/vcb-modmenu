@@ -21,6 +21,11 @@ const DIM := Color(0.42, 0.47, 0.55)
 const ACCENT := Color(0.39, 0.85, 0.55)   # "update available"
 const WHITE := Color(1, 1, 1, 1)
 
+# The Godot Mod Loader publishes two release lines: 6.x for Godot 3.x and 7.x+ for Godot 4.x.
+# VCB is Godot 3.5.1, so for the loader's own update check we only consider the Godot 3.x line
+# (major <= this) and ignore the 4.x line, which is what GitHub's "latest release" points at.
+const GODOT3_MAX_MAJOR := 6
+
 var _list: VBoxContainer = null
 var _detail: VBoxContainer = null
 var _count_label: Label = null
@@ -370,7 +375,13 @@ func _maybe_check_update(e: Dictionary) -> void:
 	var http := HTTPRequest.new()
 	add_child(http)
 	var _c = http.connect("request_completed", self, "_on_update_checked", [id, http])
+	# Most mods compare against their newest release. The Godot Mod Loader is special: it has
+	# separate Godot 3.x (6.x) and Godot 4.x (7.x+) lines, and its "latest release" is the 4.x
+	# build — the wrong engine for VCB — so for that entry we fetch the whole list and pick the
+	# newest Godot 3.x release instead (see _latest_godot3_tag).
 	var url := "https://api.github.com/repos/" + repo + "/releases/latest"
+	if bool(e.get("godot3_only", false)):
+		url = "https://api.github.com/repos/" + repo + "/releases?per_page=100"
 	var headers := ["User-Agent: VCB-ModMenu", "Accept: application/vnd.github+json"]
 	var err = http.request(url, headers, true, HTTPClient.METHOD_GET)
 	if err != OK:
@@ -387,8 +398,12 @@ func _on_update_checked(result: int, response_code: int, _headers, body, id, htt
 	if result == HTTPRequest.RESULT_SUCCESS and response_code == 200:
 		var txt := (body as PoolByteArray).get_string_from_utf8()
 		var parsed := JSON.parse(txt)
-		if parsed.error == OK and typeof(parsed.result) == TYPE_DICTIONARY:
-			latest = _strip_v(str((parsed.result as Dictionary).get("tag_name", "")))
+		if parsed.error == OK:
+			var e := _find_mod(str(id))
+			if not e.empty() and bool(e.get("godot3_only", false)):
+				latest = _latest_godot3_tag(parsed.result)
+			elif typeof(parsed.result) == TYPE_DICTIONARY:
+				latest = _strip_v(str((parsed.result as Dictionary).get("tag_name", "")))
 	if latest == "":
 		_update_status[id] = {"state": "error", "latest": ""}
 	elif _version_greater(latest, _installed_version(str(id))):
@@ -435,6 +450,30 @@ func _strip_v(tag: String) -> String:
 	if t.begins_with("v") or t.begins_with("V"):
 		t = t.substr(1)
 	return t
+
+
+# From a GitHub /releases array, the stripped tag of the newest non-draft, non-prerelease release
+# whose major version is within the Godot 3.x line (<= GODOT3_MAX_MAJOR). Used only for the Godot
+# Mod Loader entry, whose 7.x+ Godot 4.x releases (what GitHub reports as "latest") must be ignored
+# on this Godot 3.5.1 game. Returns "" if the payload isn't a release array or has no 3.x release.
+func _latest_godot3_tag(result) -> String:
+	if typeof(result) != TYPE_ARRAY:
+		return ""
+	var best := ""
+	for rel in result:
+		if typeof(rel) != TYPE_DICTIONARY:
+			continue
+		if bool(rel.get("draft", false)) or bool(rel.get("prerelease", false)):
+			continue
+		var tag := _strip_v(str(rel.get("tag_name", "")))
+		if tag == "":
+			continue
+		var parts := _ver_parts(tag)
+		if parts.empty() or int(parts[0]) > GODOT3_MAX_MAJOR:
+			continue
+		if best == "" or _version_greater(tag, best):
+			best = tag
+	return best
 
 
 # True if version string a is strictly newer than b (numeric, component-wise).
@@ -527,6 +566,7 @@ func _mod_loader_entry(store) -> Dictionary:
 		"authors": "KANA, GodotModding",
 		"website": "https://github.com/GodotModding/godot-mod-loader",
 		"dependencies": "",
+		"godot3_only": true,
 	}
 
 

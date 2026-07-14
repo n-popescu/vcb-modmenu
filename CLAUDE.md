@@ -54,6 +54,13 @@ mods-unpacked/npopescu-ModMenu/
     └── mods_window.gd        master/detail Popup: mod list + details + GitHub update-check
 ```
 
+The GitHub update-check compares each mod's installed version to its newest release. **The Godot
+Mod Loader entry is special-cased** (`godot3_only`): the loader ships a Godot 3.x line (6.x) and a
+Godot 4.x line (7.x+), and GitHub's "latest release" is the 4.x build — the wrong engine for this
+Godot 3.5.1 game — so that entry fetches the whole `/releases` list and picks the newest release
+with major `<= GODOT3_MAX_MAJOR` (see `_latest_godot3_tag`). The launcher's `modloader.rs` applies
+the same Godot-3.x rule when it downloads/updates the loader baked into `vcb.pck`.
+
 ## 3. Engine / GDScript constraints
 
 - **Godot 3.5.1**, GDScript 3.5 semantics — **not** Godot 4. No Godot-4 syntax.
