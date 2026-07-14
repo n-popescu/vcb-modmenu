@@ -361,16 +361,27 @@ func _apply_update_text(lbl: Label, e: Dictionary) -> void:
 
 func _maybe_check_update(e: Dictionary) -> void:
 	var id := str(e.get("id", ""))
-	if _repo_from_website(str(e.get("website", ""))) == "":
+	var repo := _repo_from_website(str(e.get("website", "")))
+	if repo == "":
 		return
 	if _update_status.has(id):
 		return  # already checked or in flight
 	_update_status[id] = {"state": "checking", "latest": ""}
-	var repo := _repo_from_website(str(e.get("website", "")))
+	# Some repos publish releases for more than one engine major. The Godot Mod Loader ships its
+	# Godot 4.x rewrite as major 7+ while the Godot 3.x line stays on major 6, and this game runs
+	# on Godot 3.x — so for that entry we scan the full release list and keep the newest release
+	# with major <= max_major, instead of /releases/latest (which would report the Godot 4.x build
+	# as an "update"). max_major == 0 means "no cap": a plain /releases/latest, correct for every
+	# normal mod.
+	var max_major := int(e.get("max_major", 0))
 	var http := HTTPRequest.new()
 	add_child(http)
-	var _c = http.connect("request_completed", self, "_on_update_checked", [id, http])
-	var url := "https://api.github.com/repos/" + repo + "/releases/latest"
+	var _c = http.connect("request_completed", self, "_on_update_checked", [id, http, max_major])
+	var url := ""
+	if max_major > 0:
+		url = "https://api.github.com/repos/" + repo + "/releases?per_page=100"
+	else:
+		url = "https://api.github.com/repos/" + repo + "/releases/latest"
 	var headers := ["User-Agent: VCB-ModMenu", "Accept: application/vnd.github+json"]
 	var err = http.request(url, headers, true, HTTPClient.METHOD_GET)
 	if err != OK:
@@ -380,15 +391,18 @@ func _maybe_check_update(e: Dictionary) -> void:
 		_refresh_detail_if_selected(id)
 
 
-func _on_update_checked(result: int, response_code: int, _headers, body, id, http) -> void:
+func _on_update_checked(result: int, response_code: int, _headers, body, id, http, max_major) -> void:
 	if is_instance_valid(http):
 		http.queue_free()
 	var latest := ""
 	if result == HTTPRequest.RESULT_SUCCESS and response_code == 200:
 		var txt := (body as PoolByteArray).get_string_from_utf8()
 		var parsed := JSON.parse(txt)
-		if parsed.error == OK and typeof(parsed.result) == TYPE_DICTIONARY:
-			latest = _strip_v(str((parsed.result as Dictionary).get("tag_name", "")))
+		if parsed.error == OK:
+			if int(max_major) > 0 and typeof(parsed.result) == TYPE_ARRAY:
+				latest = _pick_latest_capped(parsed.result, int(max_major))
+			elif typeof(parsed.result) == TYPE_DICTIONARY:
+				latest = _strip_v(str((parsed.result as Dictionary).get("tag_name", "")))
 	if latest == "":
 		_update_status[id] = {"state": "error", "latest": ""}
 	elif _version_greater(latest, _installed_version(str(id))):
@@ -396,6 +410,26 @@ func _on_update_checked(result: int, response_code: int, _headers, body, id, htt
 	else:
 		_update_status[id] = {"state": "current", "latest": latest}
 	_refresh_detail_if_selected(str(id))
+
+
+# From a GitHub /releases array, return the newest published (non-draft, non-prerelease) tag whose
+# MAJOR version is <= max_major (e.g. the newest Godot 3.x Mod Loader release), or "" if none.
+func _pick_latest_capped(releases: Array, max_major: int) -> String:
+	var best := ""
+	for rel in releases:
+		if typeof(rel) != TYPE_DICTIONARY:
+			continue
+		if bool(rel.get("draft", false)) or bool(rel.get("prerelease", false)):
+			continue
+		var tag := _strip_v(str(rel.get("tag_name", "")))
+		if tag == "":
+			continue
+		var parts := _ver_parts(tag)
+		if parts.size() == 0 or int(parts[0]) > max_major:
+			continue
+		if best == "" or _version_greater(tag, best):
+			best = tag
+	return best
 
 
 func _refresh_detail_if_selected(id: String) -> void:
@@ -527,6 +561,9 @@ func _mod_loader_entry(store) -> Dictionary:
 		"authors": "KANA, GodotModding",
 		"website": "https://github.com/GodotModding/godot-mod-loader",
 		"dependencies": "",
+		# The Mod Loader ships Godot 4.x as major 7+; this is a Godot 3.x game, so only track the
+		# newest 3.x (major <= 6) release when checking for updates — never the Godot 4.x build.
+		"max_major": 6,
 	}
 
 
